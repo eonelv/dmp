@@ -10,6 +10,12 @@ import (
 	. "cfg"
 )
 
+const (
+	SENDER string = "asbuilder@eone.com"
+	PASS string = "123456"
+	MAIL_SERVER string = "192.168.0.10:25"
+)
+
 func main() {
 	LoadCfg()
 	CreateDBMgr("")
@@ -50,7 +56,7 @@ func prepareSendBackStory() {
 		resultDev = fmt.Sprintf(resultDev, row.GetString("ID"),row.GetString("name"), "策划<font color='#ff0000'>验证不通过</font>")
 		result = result + resultDev
 		result += "</table><br>"
-		go SendMail("asbuilder@eone.com", "123456", "192.168.0.10:25", row.GetString("finishedBy") + "@eone.com", "跟你相关的任务被策划打回了", result, "html")
+		go SendMail(row.GetString("finishedBy") + "@eone.com", "跟你相关的任务被策划打回了", result, "html")
 	}
 }
 
@@ -82,7 +88,7 @@ func prepareDevelop() {
 		result = result + resultDev
 	}
 	result += "</table><br>"
-	SendMail("asbuilder@eone.com", "123456", "192.168.0.10:25", GetMailToDEV(), "每日需求提醒-可开发", result, "html")
+	SendMail(GetMailToDEV(), "每日需求提醒-可开发", result, "html")
 }
 
 func prepareToSend() {
@@ -126,13 +132,13 @@ func prepareToSend() {
 		result = result + resultBack
 	}
 	result += "</table><br>"
-	SendMail("asbuilder@eone.com", "123456", "192.168.0.10:25", GetMailTo(), "每日需求提醒", result, "html")
+	SendMail(GetMailTo(), "每日需求提醒", result, "html")
 }
 
-func SendMail(user, password, host, to, subject, body, mailtype string) error {
+func SendMail(to, subject, body, mailtype string) error {
 	fmt.Println("mailto", to)
-	hp := strings.Split(host, ":")
-	auth := smtp.PlainAuth("", user, password, hp[0])
+	hp := strings.Split(MAIL_SERVER, ":")
+	auth := smtp.PlainAuth("", SENDER, PASS, hp[0])
 	var content_type string
 	if mailtype == "html" {
 		content_type = "Content-Type: text/" + mailtype + "; charset=UTF-8"
@@ -140,8 +146,8 @@ func SendMail(user, password, host, to, subject, body, mailtype string) error {
 		content_type = "Content-Type: text/plain" + "; charset=UTF-8"
 	}
 
-	msg := []byte("To: " + to + "\r\nFrom: " + user + "<" + user + ">\r\nSubject: " + subject + "\r\n" + content_type + "\r\n\r\n" + body)
+	msg := []byte("To: " + to + "\r\nFrom: " + SENDER + "<" + SENDER + ">\r\nSubject: " + subject + "\r\n" + content_type + "\r\n\r\n" + body)
 	send_to := strings.Split(to, ";")
-	err := smtp.SendMail(host, auth, user, send_to, msg)
+	err := smtp.SendMail(MAIL_SERVER, auth, SENDER, send_to, msg)
 	return err
 }
