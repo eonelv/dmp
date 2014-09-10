@@ -10,6 +10,7 @@ import (
 )
 
 type ServerConfig struct {
+	RTXTo string
 	MailTo string
 	MailToDEV string
 	MailMgr string
@@ -46,6 +47,7 @@ func LoadCfg() (bool, error) {
 	}
 	srvCfg = ServerConfig{}
 	srvCfg.MailTo = serverCfg["MAIL_TO"]
+	srvCfg.RTXTo = serverCfg["RTX_TO"]
 	srvCfg.MailToDEV = serverCfg["MAIL_DEV"]
 	srvCfg.isDebug, _ = strconv.ParseBool(serverCfg["IS_DEBUG"])
 	srvCfg.MailMgr = serverCfg["MAIL_MGR"]
@@ -61,6 +63,10 @@ func GetMailMgr() string {
 
 func GetMailTo() string {
 	return srvCfg.MailTo
+}
+
+func GetRTXTo() string {
+	return srvCfg.RTXTo
 }
 
 func GetMailToDEV() string {

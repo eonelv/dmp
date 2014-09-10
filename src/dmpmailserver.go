@@ -8,7 +8,7 @@ import (
 	"time"
 	"fmt"
 	. "cfg"
-	"net/http"
+	"os/exec"
 )
 
 const (
@@ -18,6 +18,8 @@ const (
 	DURATION int64 = 30 * 60 *1000
 	STROY_NAME_MODLE string = "<a href='http://192.168.0.10/zentaopms/www/index.php?m=story&f=view&storyID=%v'>%v</a>"
 	MSG_MODLE string = "<a href='http://192.168.0.10/zentaopms/www/index.php?m=story&f=view&storyID=%v'>%v %v</a>"
+	MSG_RTX_MODLE string = "%v%v"
+	MSG_RTX_URL_MODLE string = "http://192.168.0.10/zentaopms/www/index.php?m=story&f=view&storyID=%v"
 
 )
 
@@ -30,7 +32,7 @@ func main() {
 	var lastSendTime int
 	var isSendWeek bool
 	var isSendMonth bool
-
+	go SendRTX("服务器已启动", "0", "liwei")
 	for {
 		select {
 		case <- ch:
@@ -150,16 +152,23 @@ func prepareDevelopDeadline() {
 		LogError("查询数据为空")
 	}
 
+	var needClosed bool = false
 	for _, row := range rows {
 		storyName := fmt.Sprintf(STROY_NAME_MODLE, row.GetString("storyid"), row.GetString("storytitle"))
 		msg := fmt.Sprintf(MSG_MODLE, row.GetString("storyid"), timeBegin.Format(TIME_FORMAT_YYYYMMDD), row.GetString("storytitle")+"需要研发完毕")
+		msgRTX := fmt.Sprintf(MSG_RTX_MODLE, timeBegin.Format(TIME_FORMAT_YYYYMMDD), row.GetString("storytitle")+"需要研发完毕")
 		result = "<table border='1'><tr><th>需求ID</th><th width='300'>需求名称</th><th width='300'>描述</th></tr>"
 		resultDev := "<tr align='center'><td>%v</td><td>%v</td><td>%v</td></tr>"
 		resultDev = fmt.Sprintf(resultDev, row.GetString("storyid"), storyName, msg)
 		result = result + resultDev
 		result += "</table><br>"
-		go SendMail(row.GetString("assignedTo") + "@eone.com", "你有需求需要今天研发完毕", result, "html")
-		go SendRTX(msg, row.GetString("assignedTo"))
+		go SendMail(row.GetString("assignedTo") + "@eone.com", "你有需求需要今天(" + timeBegin.Format(TIME_FORMAT_YYYYMMDD) + ")研发完毕", result, "html")
+		go SendRTX(msgRTX, row.GetString("storyid"), row.GetString("assignedTo"))
+		needClosed = true
+	}
+	if needClosed {
+		go SendMail("nagrand@eone.com", "今天(" + timeBegin.Format(TIME_FORMAT_YYYYMMDD) + ")有需求要研发完毕，留下来加班吧^_^", result, "html")
+		go SendRTX("今天(" + timeBegin.Format(TIME_FORMAT_YYYYMMDD) + ")有需求要研发完毕，留下来加班吧^_^", "0", "nagrand")
 	}
 }
 
@@ -179,7 +188,6 @@ func prepareSendBackStory() {
 
 	for _, row := range rows {
 		storyName := fmt.Sprintf(STROY_NAME_MODLE, row.GetString("ID"), row.GetString("name"))
-		msg := fmt.Sprintf(MSG_MODLE, row.GetString("storyid"), row.GetString("storytitle"), "被打回了")
 
 		result = "<table border='1'><tr><th>需求ID</th><th width='300'>需求名称</th><th width='300'>描述</th></tr>"
 		resultDev := "<tr align='center'><td>%v</td><td>%v</td><td>%v</td></tr>"
@@ -187,7 +195,9 @@ func prepareSendBackStory() {
 		result = result + resultDev
 		result += "</table><br>"
 		go SendMail(row.GetString("finishedBy") + "@eone.com", "跟你相关的任务被策划打回了", result, "html")
-		go SendRTX(msg, row.GetString("assignedTo"))
+
+		msg := fmt.Sprintf(MSG_RTX_MODLE, row.GetString("storytitle"), "被打回了")
+		go SendRTX(msg, row.GetString("ID"), row.GetString("assignedTo"))
 	}
 }
 
@@ -270,6 +280,7 @@ func prepareToSend() {
 	}
 	result += "</table><br>"
 	SendMail(GetMailTo(), "每日需求提醒", result, "html")
+	go SendRTX("您有新的邮件，请注意查收", "0", GetRTXTo())
 }
 
 func SendMail(to, subject, body, mailtype string) error {
@@ -289,37 +300,15 @@ func SendMail(to, subject, body, mailtype string) error {
 	return err
 }
 
-func SendRTX(msg , receiver string) {
-	client := &http.Client{}
-	var msgSend string = "http://192.168.0.12:8012/SendNotify.cgi?msg=%v&receiver=%v"
-	msgSend = fmt.Sprintf(msgSend, msg, receiver)
-
-	reqest, err := http.NewRequest("GET", msgSend, nil)
-
-	if err != nil {
-		LogError(err)
-		return
+func SendRTX(msg string, storyID string,  receiver string) {
+	cmd := exec.Command("rtxproxy.cmd", msg, storyID, receiver, "DMP提醒")
+	LogInfo("PARAMS", msg, storyID, receiver)
+	bytes2, err2 := cmd.Output()
+	if err2 == nil {
+		if len(bytes2) != 0 {
+			LogInfo(string(bytes2))
+		}
+	} else {
+		LogError(err2, string(bytes2))
 	}
-
-	reqest.Header.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	reqest.Header.Add("Accept-Encoding", "gzip, deflate")
-	reqest.Header.Add("Accept-Language", "zh-cn,zh;q=0.8,en-us;q=0.5,en;q=0.3")
-	reqest.Header.Add("Connection", "keep-alive")
-	reqest.Header.Add("Host", "login.sina.com.cn")
-	reqest.Header.Add("Referer", "http://weibo.com/")
-	reqest.Header.Add("User-Agent", "Mozilla/5.0 (Windows NT 6.1; WOW64; rv:12.0) Gecko/20100101 Firefox/12.0")
-	response, err := client.Do(reqest)
-	defer response.Body.Close()
-
-//	if response.StatusCode == 200 {
-//		var body string
-//
-//		switch response.Header.Get("Content-Encoding") {
-//		case "gzip":
-//		default:
-//			bodyByte, _ := ioutil.ReadAll(response.Body)
-//			body = string(bodyByte)
-//			LogInfo(body)
-//		}
-//	}
 }
