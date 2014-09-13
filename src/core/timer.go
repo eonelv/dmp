@@ -2,6 +2,11 @@ package core
 
 import "time"
 
+const (
+	TIME_FORMAT_YYYYMMDD string  = "2006-01-02"
+	TIME_FORMAT_YYYYMMDDHHMMSS string  = "2006-01-02 15:04:05"
+)
+
 type Timer struct {
 	duration int64
 	updateTime int64

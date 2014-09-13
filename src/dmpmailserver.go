@@ -8,55 +8,186 @@ import (
 	"time"
 	"fmt"
 	. "cfg"
+	"net/http"
 )
 
 const (
 	SENDER string = "asbuilder@eone.com"
 	PASS string = "123456"
 	MAIL_SERVER string = "192.168.0.10:25"
+	DURATION int64 = 30 * 60 *1000
+	STROY_NAME_MODLE string = "<a href='http://192.168.0.10/zentaopms/www/index.php?m=story&f=view&storyID=%v'>%v</a>"
+	MSG_MODLE string = "<a href='http://192.168.0.10/zentaopms/www/index.php?m=story&f=view&storyID=%v'>%v %v</a>"
+
 )
 
 func main() {
 	LoadCfg()
 	CreateDBMgr("")
 	timer := &Timer{}
-	timer.Start(30 * 60 * 1000)
+	timer.Start(DURATION)
 	ch := timer.GetChannel()
 	var lastSendTime int
+	var isSendWeek bool
+	var isSendMonth bool
+
 	for {
 		select {
 		case <- ch:
-			hour := time.Now().Hour()
-			LogInfo("当前时间为", hour)
+			timeNow := time.Now()
+			hour := timeNow.Hour()
+			weekDay := int(timeNow.Weekday())
+			monthDay := timeNow.Day()
+
+			LogInfo("当前时间为")
 			if (9 == hour || 14 == hour) && lastSendTime != hour {
 				lastSendTime = hour
 				go prepareToSend()
 				go prepareDevelop()
 				go prepareSendBackStory()
+				go prepareDevelopDeadline()
+			}
+
+			//如果是周六，统计本周关闭的单，可以验证的单，可测试的单，超期的任务，bug列表
+			if 6 == weekDay && !isSendWeek{
+				isSendWeek = true
+				weekEmail()
+			} else if isSendWeek && 6 != weekDay {
+				isSendWeek = false
+			}
+
+			//如果是每个月的第一天，统计上月完成的需求及bug。 按单个人统计(总数)
+			if 1 == monthDay && !isSendMonth{
+				isSendMonth = true
+				monthEmail()
+			} else if isSendMonth && 1 != monthDay {
+				isSendMonth = false
 			}
 		}
 	}
 
 }
 
-func prepareSendBackStory() {
+func weekEmail() {
+
+}
+
+func monthEmail() {
+	timeBegin := time.Now()
+	timeBegin = timeBegin.AddDate(0, -1, 0)
+	timeBegin = timeBegin.AddDate(0, 0, -timeBegin.Day()+1)
+	du := time.Duration(-((timeBegin.Hour() *60 * 60 + timeBegin.Minute() * 60 + timeBegin.Second())*1e9 + timeBegin.Nanosecond()))
+	timeBegin = timeBegin.Add(du)
+
+	timeEnd := time.Now()
+	timeEnd = timeEnd.AddDate(0, 0, -timeEnd.Day()+1)
+	du = time.Duration(-(((timeEnd.Hour()) *60 * 60 + timeEnd.Minute() * 60 + timeEnd.Second())*1e9 + timeEnd.Nanosecond()))
+	timeEnd = timeEnd.Add(du)
+
 	var result string
 	var sql string
-	sql = "SELECT t0.finishedBy finishedBy, t1.id ID, t1.title name from zt_task t0 RIGHT JOIN zt_story t1 ON t0.story = t1.id "
-	sql += "INNER JOIN zt_projectStory t2 ON t2.story = t1.id "
-	sql += "WHERE t1.product = ? AND t2.project = ? AND t1.status <> 'closed' AND t1.maustage in (8) AND t1.deleted <> '1' ORDER BY t1.id"
-	rows, err := DBMgr.PreQuery(sql, 5, 45)
+	sql = "SELECT SUM(t0.estimate) as estimate, SUM(t0.consumed) as consumed, t0.finishedBy as finishedBy, t1.realname as realname "
+	sql += "FROM zt_task t0 INNER JOIN zt_user t1 ON t0.finishedBy = t1.account WHERE t0.project > ? AND t0.status = 'closed' AND t0.closedReason = 'done'  AND DATE(t0.finishedDate) >= ? AND DATE(t0.finishedDate) <= ? "
+	sql += "GROUP BY t0.finishedBy "
+	rows, err := DBMgr.PreQuery(sql, GetProjectNum(), timeBegin.Format("2006-01-02 15:04:05"), timeEnd.Format(TIME_FORMAT_YYYYMMDDHHMMSS))
+	if err != nil {
+		LogError("查询数据为空")
+	}
+	result = "<table border='1'><tr><th>名称</th><th>姓名</th><th width='300'>预计完成工作量(H)</th><th width='300'>实际完成工作量(H)</th><th width='100'>修改bug(个)</th></tr>"
+	var dataRows map[string]interface {} = make(map[string]interface {})
+	for _, row := range rows {
+		var dataRow map[string]interface {} = make(map[string]interface {})
+		dataRow["finishedBy"] = row.GetString("finishedBy")
+		dataRow["estimate"] = row.GetUint64("estimate")
+		dataRow["consumed"] = row.GetUint64("consumed")
+		dataRow["realname"] = row.GetString("realname")
+		dataRows[row.GetString("finishedBy")] = dataRow
+	}
+
+	sql = "SELECT COUNT(1) as bugs, t0.resolvedBy as resolvedBy, t1.realname as realname from zt_bug t0 INNER JOIN zt_user t1 ON t0.resolvedBy = t1.account "
+	sql += "WHERE t0.product > ? AND t0.project > ? AND DATE(t0.resolvedDate) >= ? AND DATE(t0.resolvedDate) <= ? GROUP BY t0.resolvedBy"
+	rows, err = DBMgr.PreQuery(sql, GetProductNum(), GetProjectNum(), timeBegin.Format(TIME_FORMAT_YYYYMMDDHHMMSS), timeEnd.Format(TIME_FORMAT_YYYYMMDDHHMMSS))
+	if err != nil {
+		LogError("查询数据为空")
+	}
+	for _, row2 := range rows {
+		var dataRow map[string]interface {}
+		var ok bool
+		dataRow, ok = dataRows[row2.GetString("resolvedBy")].(map[string]interface {})
+		if !ok {
+			dataRow = make(map[string]interface {})
+			dataRow["finishedBy"] = row2.GetString("resolvedBy")
+			dataRow["realname"] = row2.GetString("realname")
+		}
+
+		dataRow["bugs"] = row2.GetUint64("bugs")
+		dataRows[row2.GetString("resolvedBy")] = dataRow
+	}
+
+	for _, row1 := range dataRows {
+		var tempRow map[string]interface {} = row1.(map[string]interface {})
+		resultDev := "<tr align='center'><td>%v</td><td>%v</td><td>%v</td><td>%v</td><td>%v</td></tr>"
+		resultDev = fmt.Sprintf(resultDev, tempRow["finishedBy"], tempRow["realname"],tempRow["estimate"], tempRow["consumed"], tempRow["bugs"])
+		result += resultDev
+	}
+	result += "</table>"
+	SendMail(GetMailMgr(), "月工作量汇总", result, "html")
+}
+
+/*
+  发给具体执行的人，当天有需求需要研发完毕
+ */
+func prepareDevelopDeadline() {
+	var result string
+	var sql string
+	sql = "SELECT t10.assignedTo assignedTo, t11.stroyid storyid, t11.storytitle storytitle FROM zt_task t10 INNER JOIN  "
+	sql += "(SELECT t1.id as stroyid, t1.title as storytitle, MAX(t0.deadline) storydeadline FROM zt_task t0 INNER JOIN zt_story t1 on t0.story = t1.id where t0.project > ? AND t1.status <> 'closed' GROUP BY t1.id, t1.title) t11 "
+	sql += "ON t10.story = t11.stroyid WHERE DATE(t11.storydeadline) = ?  ORDER BY t11.stroyid"
+
+	timeBegin := time.Now()
+	rows, err := DBMgr.PreQuery(sql, GetProjectNum(), timeBegin.Format(TIME_FORMAT_YYYYMMDD))
 	if err != nil {
 		LogError("查询数据为空")
 	}
 
 	for _, row := range rows {
+		storyName := fmt.Sprintf(STROY_NAME_MODLE, row.GetString("storyid"), row.GetString("storytitle"))
+		msg := fmt.Sprintf(MSG_MODLE, row.GetString("storyid"), timeBegin.Format(TIME_FORMAT_YYYYMMDD), row.GetString("storytitle")+"需要研发完毕")
 		result = "<table border='1'><tr><th>需求ID</th><th width='300'>需求名称</th><th width='300'>描述</th></tr>"
 		resultDev := "<tr align='center'><td>%v</td><td>%v</td><td>%v</td></tr>"
-		resultDev = fmt.Sprintf(resultDev, row.GetString("ID"),row.GetString("name"), "策划<font color='#ff0000'>验证不通过</font>")
+		resultDev = fmt.Sprintf(resultDev, row.GetString("storyid"), storyName, msg)
+		result = result + resultDev
+		result += "</table><br>"
+		go SendMail(row.GetString("assignedTo") + "@eone.com", "你有需求需要今天研发完毕", result, "html")
+		go SendRTX(msg, row.GetString("assignedTo"))
+	}
+}
+
+/*
+单独发给具体的相关人， 需求被打回了
+ */
+func prepareSendBackStory() {
+	var result string
+	var sql string
+	sql = "SELECT t0.finishedBy finishedBy, t1.id ID, t1.title name from zt_task t0 RIGHT JOIN zt_story t1 ON t0.story = t1.id "
+	sql += "INNER JOIN zt_projectStory t2 ON t2.story = t1.id "
+	sql += "WHERE t1.product > ? AND t2.project > ? AND t1.status <> 'closed' AND t1.maustage in (8) AND t1.deleted <> '1' ORDER BY t1.id"
+	rows, err := DBMgr.PreQuery(sql, GetProductNum(), GetProjectNum())
+	if err != nil {
+		LogError("查询数据为空")
+	}
+
+	for _, row := range rows {
+		storyName := fmt.Sprintf(STROY_NAME_MODLE, row.GetString("ID"), row.GetString("name"))
+		msg := fmt.Sprintf(MSG_MODLE, row.GetString("storyid"), row.GetString("storytitle"), "被打回了")
+
+		result = "<table border='1'><tr><th>需求ID</th><th width='300'>需求名称</th><th width='300'>描述</th></tr>"
+		resultDev := "<tr align='center'><td>%v</td><td>%v</td><td>%v</td></tr>"
+		resultDev = fmt.Sprintf(resultDev, row.GetString("ID"), storyName, "策划<font color='#ff0000'>验证不通过</font>")
 		result = result + resultDev
 		result += "</table><br>"
 		go SendMail(row.GetString("finishedBy") + "@eone.com", "跟你相关的任务被策划打回了", result, "html")
+		go SendRTX(msg, row.GetString("assignedTo"))
 	}
 }
 
@@ -65,8 +196,8 @@ func prepareDevelop() {
 	//可进行开发的需求
 	sql := fmt.Sprintf("%v %v",
 		"SELECT t1.id as ID, t1.title as name, t1.maustatus as maustatus, t1.maustage as maustage FROM zt_story t1 INNER JOIN zt_projectStory t2 ON t1.id = t2.story",
-		"WHERE t1.product = ? AND t2.project = ? AND t1.status in ('active') AND t1.stage NOT IN ('developed','tested') AND t1.deleted <> '1' ORDER BY t1.id")
-	rows, err := DBMgr.PreQuery(sql, 5, 45)
+		"WHERE t1.product = > AND t2.project = > AND t1.status in ('active') AND t1.stage NOT IN ('developed','tested') AND t1.deleted <> '1' ORDER BY t1.id")
+	rows, err := DBMgr.PreQuery(sql, GetProductNum(), GetProjectNum())
 	if err != nil {
 		fmt.Println("查询数据为空")
 		return
@@ -91,6 +222,9 @@ func prepareDevelop() {
 	SendMail(GetMailToDEV(), "每日需求提醒-可开发", result, "html")
 }
 
+/*
+发给负责人，dss。carreyzhou，acai，peter。 被打回的需求，可以测试的需求，可以验证的需求
+ */
 func prepareToSend() {
 	var result string
 
@@ -98,11 +232,12 @@ func prepareToSend() {
 	//验证不通过的需求
 	sql := fmt.Sprintf("%v %v",
 		"SELECT t1.id as ID, t1.title as name, t1.maustatus as maustatus, t1.maustage as maustage FROM zt_story t1 INNER JOIN zt_projectStory t2 ON t1.id = t2.story",
-		"WHERE t1.product = ? AND t2.project = ? AND t1.status <> 'closed' AND t1.maustage in (8) AND t1.deleted <> '1' ORDER BY t1.id")
-	rows, _ := DBMgr.PreQuery(sql, 5, 45)
+		"WHERE t1.product > ? AND t2.project > ? AND t1.status <> 'closed' AND t1.maustage in (8) AND t1.deleted <> '1' ORDER BY t1.id")
+	rows, _ := DBMgr.PreQuery(sql, GetProductNum(), GetProjectNum())
 	for _,row := range rows {
+		storyName := fmt.Sprintf(STROY_NAME_MODLE, row.GetString("ID"), row.GetString("name"))
 		resultBack := "<tr align='center'><td>%v</td><td>%v</td><td>%v</td></tr>"
-		resultBack = fmt.Sprintf(resultBack, row.GetString("ID"), row.GetString("name"), "<font color='#ff0000'>被打回,当前处于验证不通过状态</font>")
+		resultBack = fmt.Sprintf(resultBack, row.GetString("ID"), storyName, "<font color='#ff0000'>被打回,当前处于验证不通过状态</font>")
 		result = result + resultBack
 	}
 	result += "</table><br>"
@@ -111,11 +246,12 @@ func prepareToSend() {
 	//可以测试的需求
 	sql = fmt.Sprintf("%v %v",
 		"SELECT t1.id as ID, t1.title as name, t1.maustatus as maustatus, t1.maustage as maustage FROM zt_story t1 INNER JOIN zt_projectStory t2 ON t1.id = t2.story",
-		"WHERE t1.product = ? AND t2.project = ? AND t1.status <> 'closed' AND t1.maustage in (7) AND t1.deleted <> '1' ORDER BY t1.id")
-	rows, _ = DBMgr.PreQuery(sql, 5, 45)
+		"WHERE t1.product > ? AND t2.project > ? AND t1.status <> 'closed' AND t1.maustage in (7) AND t1.deleted <> '1' ORDER BY t1.id")
+	rows, _ = DBMgr.PreQuery(sql, GetProductNum(), GetProjectNum())
 	for _,row := range rows {
+		storyName := fmt.Sprintf(STROY_NAME_MODLE, row.GetString("ID"), row.GetString("name"))
 		resultBack := "<tr align='center'><td>%v</td><td>%v</td><td>%v</td></tr>"
-		resultBack = fmt.Sprintf(resultBack, row.GetString("ID"), row.GetString("name"), "<font color='#0000ff'>验证通过，可以进行测试</font>")
+		resultBack = fmt.Sprintf(resultBack, row.GetString("ID"), storyName, "<font color='#0000ff'>验证通过，可以进行测试</font>")
 		result = result + resultBack
 	}
 	result += "</table><br>"
@@ -124,11 +260,12 @@ func prepareToSend() {
 	//可以验证的需求
 	sql = fmt.Sprintf("%v %v",
 		"SELECT t1.id as ID, t1.title as name, t1.maustatus as maustatus, t1.maustage as maustage FROM zt_story t1 INNER JOIN zt_projectStory t2 ON t1.id = t2.story",
-		"WHERE t1.product = ? AND t2.project = ? AND t1.status <> 'closed' AND t1.maustage not in (4,5,6,7,8) AND t1.stage = 'developed' AND t1.deleted <> '1' ORDER BY t1.id")
-	rows, _ = DBMgr.PreQuery(sql, 5, 45)
+		"WHERE t1.product > ? AND t2.project > ? AND t1.status <> 'closed' AND t1.maustage not in (4,5,6,7,8) AND t1.stage = 'developed' AND t1.deleted <> '1' ORDER BY t1.id")
+	rows, _ = DBMgr.PreQuery(sql, GetProductNum(), GetProjectNum())
 	for _,row := range rows {
+		storyName := fmt.Sprintf(STROY_NAME_MODLE, row.GetString("ID"), row.GetString("name"))
 		resultBack := "<tr align='center'><td>%v</td><td>%v</td><td>%v</td></tr>"
-		resultBack = fmt.Sprintf(resultBack, row.GetString("ID"), row.GetString("name"), "<font color='#0000ff'>开发完成，可以进行验证</font>")
+		resultBack = fmt.Sprintf(resultBack, row.GetString("ID"), storyName, "<font color='#0000ff'>开发完成，可以进行验证</font>")
 		result = result + resultBack
 	}
 	result += "</table><br>"
@@ -150,4 +287,39 @@ func SendMail(to, subject, body, mailtype string) error {
 	send_to := strings.Split(to, ";")
 	err := smtp.SendMail(MAIL_SERVER, auth, SENDER, send_to, msg)
 	return err
+}
+
+func SendRTX(msg , receiver string) {
+	client := &http.Client{}
+	var msgSend string = "http://192.168.0.12:8012/SendNotify.cgi?msg=%v&receiver=%v"
+	msgSend = fmt.Sprintf(msgSend, msg, receiver)
+
+	reqest, err := http.NewRequest("GET", msgSend, nil)
+
+	if err != nil {
+		LogError(err)
+		return
+	}
+
+	reqest.Header.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	reqest.Header.Add("Accept-Encoding", "gzip, deflate")
+	reqest.Header.Add("Accept-Language", "zh-cn,zh;q=0.8,en-us;q=0.5,en;q=0.3")
+	reqest.Header.Add("Connection", "keep-alive")
+	reqest.Header.Add("Host", "login.sina.com.cn")
+	reqest.Header.Add("Referer", "http://weibo.com/")
+	reqest.Header.Add("User-Agent", "Mozilla/5.0 (Windows NT 6.1; WOW64; rv:12.0) Gecko/20100101 Firefox/12.0")
+	response, err := client.Do(reqest)
+	defer response.Body.Close()
+
+//	if response.StatusCode == 200 {
+//		var body string
+//
+//		switch response.Header.Get("Content-Encoding") {
+//		case "gzip":
+//		default:
+//			bodyByte, _ := ioutil.ReadAll(response.Body)
+//			body = string(bodyByte)
+//			LogInfo(body)
+//		}
+//	}
 }

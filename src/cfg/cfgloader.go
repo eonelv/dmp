@@ -12,6 +12,9 @@ import (
 type ServerConfig struct {
 	MailTo string
 	MailToDEV string
+	MailMgr string
+	ProductNum int
+	ProjectNum int
 	isDebug bool
 }
 
@@ -45,8 +48,15 @@ func LoadCfg() (bool, error) {
 	srvCfg.MailTo = serverCfg["MAIL_TO"]
 	srvCfg.MailToDEV = serverCfg["MAIL_DEV"]
 	srvCfg.isDebug, _ = strconv.ParseBool(serverCfg["IS_DEBUG"])
+	srvCfg.MailMgr = serverCfg["MAIL_MGR"]
+	srvCfg.ProductNum, _ = strconv.Atoi(serverCfg["PRODUCT_NUM"])
+	srvCfg.ProjectNum, _ = strconv.Atoi(serverCfg["PROJECT_NUM"])
 
 	return true, nil
+}
+
+func GetMailMgr() string {
+	return srvCfg.MailMgr
 }
 
 func GetMailTo() string {
@@ -55,6 +65,14 @@ func GetMailTo() string {
 
 func GetMailToDEV() string {
 	return srvCfg.MailToDEV
+}
+
+func GetProductNum() int {
+	return srvCfg.ProductNum
+}
+
+func GetProjectNum() int {
+	return srvCfg.ProjectNum
 }
 
 func IsDebug() bool {
